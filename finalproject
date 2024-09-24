@@ -1,0 +1,252 @@
+from django.db import models
+from telegram import Update
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext, ConversationHandler
+from telegram.ext.dispatcher import run_async
+
+# Модель курсів
+class Course(models.Model):
+    name = models.CharField(max_length=100)
+    description = models.TextField()
+    level = models.CharField(max_length=50)
+    price = models.DecimalField(max_digits=10, decimal_places=2)
+
+    def __str__(self):
+        return self.name
+
+# Модель студентів
+class Student(models.Model):
+    name = models.CharField(max_length=100)
+    phone_number = models.CharField(max_length=20, blank=True)
+    email = models.EmailField(blank=True)
+    level = models.CharField(max_length=50)
+    course = models.ForeignKey(Course, on_delete=models.CASCADE)
+    registered_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.name
+
+# Модель для збереження запиту на реєстрацію
+class RegistrationRequest(models.Model):
+    user_id = models.IntegerField()
+    name = models.CharField(max_length=100)
+    level = models.CharField(max_length=50)
+    contact = models.CharField(max_length=200)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"Запит від {self.name} - {self.level}"
+
+# Модель для налаштувань бота
+class BotSettings(models.Model):
+    admin_user_id = models.IntegerField()
+
+    def __str__(self):
+        return f"Налаштування бота"
+
+
+# Встановлення логування
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# Токен API вашого бота
+TOKEN = "YOUR_BOT_TOKEN"  # Замініть "YOUR_BOT_TOKEN" на реальний токен
+
+# Константи для станів розмови
+(START, NAME, LEVEL, CONTACT, CONFIRM, COURSES, SELECT_COURSE, CHOOSE_COURSE) = range(8)
+
+# Функція для обробки команди /start
+def start(update: Update, context: CallbackContext) -> int:
+    """Send a message when the command /start is issued."""
+    update.message.reply_text('Привіт! Я бот для запису на курс англійської мови.n'
+                              'Щоб дізнатися про доступні курси, введіть /courses.n'
+                              'Щоб записатися на курс, введіть /register.')
+    return START
+
+# Функція для виведення курсів
+def show_courses(update: Update, context: CallbackContext) -> int:
+    """Show available courses."""
+    courses = Course.objects.all()
+    if courses:
+        message = "Доступні курси:\n"
+        for i, course in enumerate(courses):
+            message += f"{i+1}. {course.name} ({course.level})\n"
+            message += f"  Опис: {course.description}\n"
+            message += f"  Ціна: {course.price} грн\n\n"
+        update.message.reply_text(message)
+        return CHOOSE_COURSE
+    else:
+        update.message.reply_text("На даний момент курсів немає. Слідкуйте за оновленнями.")
+        return START
+
+# Функція для збору імені
+def name(update: Update, context: CallbackContext) -> int:
+    """Store user's name."""
+    user_name = update.message.text
+    context.user_data['name'] = user_name
+    update.message.reply_text(f'Дякую! Я запам'ятав твоє ім'я: {user_name}\n'
+                              'Тепер введіть рівень англійської мови (початковий, середній, просунутий):')
+    return LEVEL
+
+# Функція для збору рівня англійської
+def level(update: Update, context: CallbackContext) -> int:
+    """Store user's level."""
+    user_level = update.message.text
+    context.user_data['level'] = user_level
+    update.message.reply_text(f'Добре. Рівень: {user_level}\n'
+                              'Напишіть мені свій номер телефону або електронну пошту для зв'язку:')
+    return CONTACT
+
+# Функція для збору контактних даних
+def contact(update: Update, context: CallbackContext) -> int:
+    """Store user's contact."""
+    user_contact = update.message.text
+    context.user_data['contact'] = user_contact
+    update.message.reply_text(f'Відмінно! Твої дані:\n'
+                              f'Ім'я: {context.user_data["name"]}\n'
+                              f'Рівень: {context.user_data["level"]}\n'
+                              f'Контакт: {context.user_data["contact"]}\n'
+                              f'Чи все вірно? Напиши "Так" для підтвердження або "Ні" для редагування:')
+    return CONFIRM
+
+# Функція для підтвердження даних
+def confirm(update: Update, context: CallbackContext) -> int:
+    """Confirm user's data."""
+    user_choice = update.message.text
+    if user_choice.lower() == 'так':
+        # Зберігаємо дані користувача в базу
+        registration_request = RegistrationRequest.objects.create(
+            user_id=update.effective_user.id,
+            name=context.user_data["name"],
+            level=context.user_data["level"],
+            contact=context.user_data["contact"],
+        )
+        update.message.reply_text(f'Дякую за реєстрацію! Ми зв'яжемося з тобою найближчим часом.\n'
+                                  f'Твій ID запиту: {registration_request.id}')
+        return ConversationHandler.END
+    else:
+        update.message.reply_text('Окей, почнімо спочатку. Введіть своє ім'я:')
+        return NAME
+
+# Функція для вибору курсу
+def choose_course(update: Update, context: CallbackContext) -> int:
+    """Choose a course."""
+    try:
+        choice = int(update.message.text)
+        courses = Course.objects.all()
+        if 0 < choice <= courses.count():
+            selected_course = courses[choice - 1]
+            context.user_data['course_id'] = selected_course.id
+            update.message.reply_text(f'Ви обрали курс: {selected_course.name}\n'
+                                      f'Щоб записатися, введіть /register.')
+            return START
+        else:
+            update.message.reply_text('Невірний вибір. Спробуйте ще раз.')
+            return CHOOSE_COURSE
+    except ValueError:
+        update.message.reply_text('Введіть число!')
+        return CHOOSE_COURSE
+
+# Функція для обробки невідомих команд
+def unknown(update: Update, context: CallbackContext) -> None:
+    """Handle the /unknown command."""
+    update.message.reply_text('Вибачте, я не розумію цю команду. Спробуйте /start.')
+
+@run_async
+def cancel(update: Update, context: CallbackContext) -> int:
+    """
+Cancels and ends the conversation."""
+    user = update.message.from_user
+    logger.info("User %s canceled the conversation.", user.first_name)
+    update.message.reply_text(
+        'Розмова скасована. Щоб почати знову, введіть /start'
+    )
+    return ConversationHandler.END
+
+# Функція для обробки повідомлень адміністратора
+def admin_message(update: Update, context: CallbackContext) -> None:
+    """Handle messages from the admin user."""
+    user = update.effective_user
+    if user.id == context.bot_data.get('admin_id'):
+        update.message.reply_text(f'Вітаю, адмін! \n'
+                                  f'Ти можеш переглянути список зареєстрованих користувачів:\n'
+                                  f'/registered_users\n\n'
+                                  f'Або переглянути список запитів на реєстрацію:\n'
+                                  f'/registration_requests\n')
+    else:
+        update.message.reply_text('Доступ заборонено.')
+
+# Функція для виведення зареєстрованих користувачів
+def registered_users(update: Update, context: CallbackContext) -> None:
+    """Show registered users."""
+    users = Student.objects.all()
+    if users:
+        message = "Зареєстровані користувачі:\n"
+        for user in users:
+            message += f"Ім'я: {user.name}\n"
+            message += f"Рівень: {user.level}\n"
+            message += f"Контакт: {user.phone_number or user.email}\n\n"
+        update.message.reply_text(message)
+    else:
+        update.message.reply_text("Зареєстрованих користувачів немає.")
+
+# Функція для виведення запитів на реєстрацію
+def registration_requests(update: Update, context: CallbackContext) -> None:
+    """Show registration requests."""
+    requests = RegistrationRequest.objects.all()
+    if requests:
+        message = "Запити на реєстрацію:\n"
+        for request in requests:
+            message += f"ID: {request.id}\n"
+            message += f"Ім'я: {request.name}\n"
+            message += f"Рівень: {request.level}\n"
+            message += f"Контакт: {request.contact}\n\n"
+        update.message.reply_text(message)
+    else:
+        update.message.reply_text("Запитів на реєстрацію немає.")
+
+def main() -> None:
+    """Start the bot."""
+    updater = Updater(TOKEN)
+
+    # Отримання диспетчера для реєстрації обробників
+    dispatcher = updater.dispatcher
+
+    # Отримуємо ID адміністратора з бази даних (якщо він налаштований)
+    admin_id = BotSettings.objects.first().admin_user_id if BotSettings.objects.exists() else None
+    if admin_id:
+        dispatcher.bot_data['admin_id'] = admin_id
+
+    # Реєстрація обробників
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler('start', start), CommandHandler('register', start)],
+        states={
+            START: [CommandHandler('courses', show_courses)],
+            COURSES: [MessageHandler(Filters.text & ~Filters.command, choose_course)],
+            CHOOSE_COURSE: [MessageHandler(Filters.text & ~Filters.command, choose_course)],
+            NAME: [MessageHandler(Filters.text & ~Filters.command, name)],
+            LEVEL: [MessageHandler(Filters.text & ~Filters.command, level)],
+            CONTACT: [MessageHandler(Filters.text & ~Filters.command, contact)],
+            CONFIRM: [MessageHandler(Filters.text & ~Filters.command, confirm)],
+        },
+        fallbacks=[CommandHandler('cancel', cancel)],
+    )
+    dispatcher.add_handler(conv_handler)
+
+    # Обробник для невідомих команд
+    dispatcher.add_handler(MessageHandler(Filters.command, unknown))
+
+    # Обробник для адміністратора
+    dispatcher.add_handler(CommandHandler('registered_users', registered_users))
+    dispatcher.add_handler(CommandHandler('registration_requests', registration_requests))
+
+    # Запуск бота
+    updater.start_polling()
+
+    # Завершення роботи бота,
+коли викликається Ctrl+C
+    updater.idle()
+
+if __name__ == '__main__':
+    main()
