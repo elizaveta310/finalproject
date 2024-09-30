@@ -1,0 +1,28 @@
+# .gitignore
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+env/
+.venv/
+.env/
+
+# Environment variables
+.env
+
+# VS Code
+.vscode/
+
+# Database files
+*.db
+
+# Logs
+logs/
+*.log
+
+# Others
+*.sqlite3
